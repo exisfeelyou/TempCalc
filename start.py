@@ -102,4 +102,5 @@ except KeyboardInterrupt:
     sys.exit()
 except Exception as e:
     print(f"Unexpected error occurred: {str(e)}")
+    input()
     raise
