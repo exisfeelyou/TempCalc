@@ -5,6 +5,7 @@ from scipy.optimize import minimize
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from dotenv import load_dotenv
+import datetime
 
 load_dotenv()
 
@@ -22,7 +23,6 @@ OFFSET_D = float(os.getenv('OFFSET_D', '-1'))
 
 def parse_temperature(input_str: str) -> float:
     try:
-        # Заменяем запятую на точку и преобразуем в float
         return float(input_str.replace(',', '.'))
     except ValueError:
         raise ValueError("❌ Неверный формат числа. Используйте точку или запятую для разделения десятичных знаков.")
@@ -30,13 +30,11 @@ def parse_temperature(input_str: str) -> float:
 def parse_temperatures(input_str: str, editing_mode: bool = False, target_temp: float = None) -> Tuple[List[float], float]:
     try:
         if editing_mode and target_temp is not None:
-            # Режим редактирования - парсим только текущие температуры
             current_temps = [parse_temperature(temp) for temp in input_str.strip().split()]
             if len(current_temps) != 3:
                 raise ValueError("❌ Необходимо ввести три значения текущих температур.")
             return current_temps, target_temp
         else:
-            # Обычный режим - парсим и текущие температуры, и целевую
             try:
                 values = [parse_temperature(temp) for temp in input_str.strip().split()]
                 if len(values) != 4:
@@ -54,38 +52,11 @@ def parse_temperatures(input_str: str, editing_mode: bool = False, target_temp: 
             
     except ValueError as e:
         if editing_mode:
-            raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур]\nНапример: <code>1008.5 1003.7 1001.2</code>\nили: <code>1008,5 1003,7 1001,2</code>")
+            raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур]\nНапример: <code>1008.5 1003.7 1001.2</code>")
         else:
-            raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур] [температура задания]\nНапример: <code>1008.5 1003.7 1001.2 1000.0</code>\nили: <code>1008,5 1003,7 1001,2 1000,0</code>")
-
-def parse_all_ranges(input_str: str) -> Dict[str, List[float]]:
-    """Парсит строку с диапазонами для всех зон"""
-    try:
-        values = input_str.strip().split()
-        if len(values) != 6:
-            raise ValueError("Необходимо ввести 6 значений")
-            
-        # Проверяем формат каждого значения
-        for val in values:
-            if not (val.startswith('+') or val.startswith('-') or val == '0'):
-                raise ValueError("Каждое значение должно начинаться с '+', '-' или быть равным '0'")
-        
-        ranges = {
-            'B': [float(values[1]), float(values[0])],  # меняем порядок для правильного мин/макс
-            'C': [float(values[3]), float(values[2])],
-            'D': [float(values[5]), float(values[4])]
-        }
-        
-        return ranges
-        
-    except ValueError as e:
-        raise ValueError(f"❌ Неверный формат. {str(e)}.\nИспользуйте формат: \"+5 0 +1 -1 0 -2\"")
+            raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур] [температура задания]\nНапример: <code>1008.5 1003.7 1001.2 1000.0</code>")
 
 def custom_round(value: float) -> str:
-    """
-    Округляет число до целого или до 0.5, в зависимости от того, что ближе.
-    Возвращает строку с результатом, убирая .0 для целых чисел.
-    """
     if abs(value) < 0.25:
         return "не корректировать"
         
@@ -93,12 +64,15 @@ def custom_round(value: float) -> str:
     half_rounded = round(value * 2) / 2
     
     if abs(value - integer_part) < abs(value - half_rounded):
-        return str(integer_part)  # Для целых чисел возвращаем просто число
+        return str(integer_part)
     else:
-        return f"{half_rounded:.1f}" if half_rounded % 1 != 0 else str(int(half_rounded))  # Для дробных оставляем .5, для целых убираем .0
+        return f"{half_rounded:.1f}" if half_rounded % 1 != 0 else str(int(half_rounded))
 
 class ThermalReactor:
-    def __init__(self, mode='pc', user_ranges_dict=None):
+    def __init__(self, mode: str, user_ranges_dict=None):
+        if mode not in ['pc', 'bprt']:
+            raise ValueError("Некорректный режим работы")
+            
         self.DISTANCE = DISTANCE
         self.mode = mode
         self.MAX_DEVIATION = PC_MAX_DEVIATION if mode == 'pc' else BPRT_MAX_DEVIATION
@@ -107,8 +81,20 @@ class ThermalReactor:
         self.TARGET_TEMPS = None
         self.user_ranges = None
         self.user_ranges_dict = user_ranges_dict
-        characteristic_length = PC_CHARACTERISTIC_LENGTH if mode == 'pc' else BPRT_CHARACTERISTIC_LENGTH
-        self.heat_transfer_coef = np.exp(-self.DISTANCE / characteristic_length)
+        
+        # Разные коэффициенты теплопередачи для разных режимов
+        if mode == 'pc':
+            self.heat_transfer_coef = np.exp(-self.DISTANCE / PC_CHARACTERISTIC_LENGTH)
+        else:  # bprt
+            self.heat_transfer_coef = np.exp(-self.DISTANCE / BPRT_CHARACTERISTIC_LENGTH)
+
+    def get_influence_matrix(self):
+        """Возвращает матрицу влияния зон"""
+        return np.array([
+            [1.0, 1.0, self.heat_transfer_coef**5],
+            [self.heat_transfer_coef, 1.0, self.heat_transfer_coef],
+            [self.heat_transfer_coef**5, 1.0, 1.0]
+        ])
 
     def set_temperatures(self, current_temps: List[float], target_temp: float, user_id: int = None):
         self.initial_temps = np.array(current_temps)
@@ -128,21 +114,18 @@ class ThermalReactor:
                 self.TARGET_TEMPS = np.array([target_temp] * 3)
 
     def calculate_corrections(self, final_temps: np.ndarray) -> np.ndarray:
-        """
-        Рассчитывает корректировки с учетом рабочих диапазонов и взаимного влияния зон.
-        Сначала рассчитывает зону Ц как ведущую, от которой зависят остальные зоны.
-        """
         corrections = np.zeros(3)
         base_temp = self.TARGET_TEMP
         current_temps = self.initial_temps
 
         if self.user_ranges:
-            # 1. Сначала зона Ц (ведущая)
+            influence_matrix = self.get_influence_matrix()
+            
+            # 1. Центральная зона (Ц)
             current_c = current_temps[1]
             c_upper = base_temp + max(self.user_ranges['C'])
             c_lower = base_temp + min(self.user_ranges['C'])
             
-            # Определяем целевую температуру для Ц
             if current_c > c_upper:
                 c_target = c_upper
             elif current_c < c_lower:
@@ -151,64 +134,45 @@ class ThermalReactor:
                 c_steps = np.arange(c_lower, c_upper + 0.5, 0.5)
                 c_target = c_steps[np.abs(c_steps - current_c).argmin()]
             
-            # Рассчитываем корректировку для Ц
-            corrections[1] = round((c_target - current_c) * 2) / 2
+            initial_c_correction = round((c_target - current_c) * 2) / 2
             
-            # Матрица влияния зон друг на друга
-            influence_matrix = np.array([
-                [1.0, 1.0, self.heat_transfer_coef**5],
-                [self.heat_transfer_coef, 1.0, self.heat_transfer_coef],
-                [self.heat_transfer_coef**5, 1.0, 1.0]
-            ])
-            
-            # 2. Теперь рассчитываем Б и Д с учетом влияния Ц и взаимных зависимостей
-            for zone, idx in [('B', 0), ('D', 2)]:
+            # 2. Краевые зоны с учетом влияния центра
+            targets = []
+            for zone, idx in [('B', 0), ('C', 1), ('D', 2)]:
+                if idx == 1:  # Центральная зона
+                    targets.append(c_target)
+                    continue
+                    
                 current = current_temps[idx]
-                
-                # Применяем влияние корректировки Ц и взаимные зависимости
-                if idx == 0:  # Для зоны Б
-                    affected = current + corrections[1] + (corrections[1] * self.heat_transfer_coef)
-                else:  # Для зоны Д
-                    affected = current + corrections[1] + (corrections[1] * self.heat_transfer_coef)
-                
                 upper = base_temp + max(self.user_ranges[zone])
                 lower = base_temp + min(self.user_ranges[zone])
                 
-                # Определяем целевую температуру
-                if affected > upper:
+                if current > upper:
                     target = upper
-                elif affected < lower:
+                elif current < lower:
                     target = lower
                 else:
                     steps = np.arange(lower, upper + 0.5, 0.5)
-                    target = steps[np.abs(steps - affected).argmin()]
-                
-                # Рассчитываем корректировку с учетом всех влияний
-                corrections[idx] = round((target - current) * 2) / 2
-
-            print("\nDebug info:")
-            print(f"Current temps: {current_temps}")
-            print(f"C correction: {corrections[1]}")
-            print(f"B correction: {corrections[0]}")
-            print(f"D correction: {corrections[2]}")
-            print(f"Influence matrix:\n{influence_matrix}")
+                    target = steps[np.abs(steps - current).argmin()]
+                targets.append(target)
+            
+            # 3. Решаем систему уравнений для получения корректировок
+            # M * corrections = targets - current_temps
+            # где M - матрица влияния
+            targets = np.array(targets)
+            corrections = np.linalg.solve(influence_matrix, targets - current_temps)
+            
+            # Округляем корректировки до ближайших 0.5
+            corrections = np.round(corrections * 2) / 2
 
         return corrections
 
     def calculate_temperature_changes(self, corrections: np.ndarray) -> np.ndarray:
-        """Рассчитывает финальные температуры с учетом взаимного влияния зон"""
-        influence_matrix = np.array([
-            [1.0, 1.0, self.heat_transfer_coef**5],
-            [self.heat_transfer_coef, 1.0, self.heat_transfer_coef],
-            [self.heat_transfer_coef**5, 1.0, 1.0]
-        ])
+        # Используем общий метод для получения матрицы влияния
+        influence_matrix = self.get_influence_matrix()
         
         temperature_changes = np.dot(influence_matrix, corrections)
         final_temps = self.initial_temps + temperature_changes
-        
-        print("\nInfluence calculation:")
-        print(f"Temperature changes: {temperature_changes}")
-        print(f"Final temps: {final_temps}")
         
         return final_temps
 
@@ -262,7 +226,10 @@ async def handle_temperatures(update: Update, context: ContextTypes.DEFAULT_TYPE
             target_temp=target_temp
         )
         
-        mode = context.user_data.get('mode', 'pc')
+        if 'mode' not in context.user_data:
+            raise ValueError("❌ Сначала выберите реактор")
+            
+        mode = context.user_data['mode']
         reactor = ThermalReactor(mode=mode, user_ranges_dict=user_ranges_dict)
         reactor.set_temperatures(current_temps, target_temp, update.effective_user.id)
         
