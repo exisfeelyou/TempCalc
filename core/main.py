@@ -136,7 +136,7 @@ async def process_all_ranges(update: Update, context: ContextTypes.DEFAULT_TYPE)
             raise ValueError("❌ Максимальное значение должно быть больше или равно минимальному")
             
         # Создаем словарь диапазонов
-        user_ranges = {
+        ranges_dict = {
             'B': [ranges[0], ranges[1]],
             'C': [ranges[2], ranges[3]],
             'D': [ranges[4], ranges[5]]
@@ -144,26 +144,21 @@ async def process_all_ranges(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Сохраняем диапазоны
         user_id = update.effective_user.id
-        if user_id not in user_ranges_dict:
-            user_ranges_dict[user_id] = {}
-        user_ranges_dict[user_id] = user_ranges
+        if user_id not in user_ranges:
+            user_ranges[user_id] = {}
+        user_ranges[user_id] = ranges_dict
         
         await update.message.reply_text(
             "✅ Рабочие диапазоны установлены:\n\n"
-            f"Б: от {ranges[1]:+.1f} до {ranges[0]:+.1f}\n"
-            f"Ц: от {ranges[3]:+.1f} до {ranges[2]:+.1f}\n"
-            f"Д: от {ranges[5]:+.1f} до {ranges[4]:+.1f}"
+            f"Б: от {ranges[0]:+.1f} до {ranges[1]:+.1f}\n"
+            f"Ц: от {ranges[2]:+.1f} до {ranges[3]:+.1f}\n"
+            f"Д: от {ranges[4]:+.1f} до {ranges[5]:+.1f}"
         )
         
         del context.user_data['state']
         
     except ValueError as e:
         await update.message.reply_text(str(e))
-
-# В обработчик состояний добавить:
-if state == 'waiting_all_ranges':
-    await process_all_ranges(update, context)
-    return
 
 async def show_active_outputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not active_outputs:
@@ -189,7 +184,16 @@ def validate_reactor_number(reactor_number: str) -> bool:
     return False
 
 def get_reactor_mode(reactor_number: str) -> str:
-    # Проверяем сначала как ID, потом как альтернативное значение
+    """
+    Получает режим работы реактора из базы данных
+    Args:
+        reactor_number: номер реактора в формате X-X или XX
+    Returns:
+        str: режим работы реактора из базы данных
+    Raises:
+        ValueError: если реактор не найден
+    """
+    # Проверяем сначала как ID
     if reactor_number in REACTORS_DB['reactors']:
         return REACTORS_DB['reactors'][reactor_number]['mode']
     
@@ -197,7 +201,8 @@ def get_reactor_mode(reactor_number: str) -> str:
     for reactor_data in REACTORS_DB['reactors'].values():
         if reactor_data['alt'] == reactor_number:
             return reactor_data['mode']
-    return 'pc'  # default mode
+            
+    raise ValueError(f"Реактор {reactor_number} не найден в базе данных")
 
 def get_reactor_id(reactor_number: str) -> str:
     # Если это ID, возвращаем его
@@ -267,6 +272,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data.startswith("range_"):
         await handle_range_callback(update, context)
+    
+    elif query.data.startswith("set_range_all"):
+        await set_range_all(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -287,6 +295,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif text == "🔧 Рабочие диапазоны зон":
         await show_ranges(update, context)
+    
+    elif context.user_data.get('state') == 'waiting_all_ranges':
+        await process_all_ranges(update, context)
+        return
     
     elif 'editing_range' in context.user_data:
         try:
@@ -317,19 +329,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
             
-        mode = get_reactor_mode(reactor_number)
-        reactor_id = get_reactor_id(reactor_number)
-        context.user_data['current_reactor'] = reactor_id
-        context.user_data['mode'] = mode
-        await update.message.reply_text(
-            f"Выбран реактор: <code>{reactor_id}</code>\n\n"
-            "Введите температуры в формате:\n"
-            "[три значения температур] [температура задания]\n"
-            "Например: <code>1008.5 1003.7 1001.2 1000.0</code>\n"
-            "или: <code>1008,5 1003,7 1001,2 1000,0</code>",
-            parse_mode='HTML'
-        )
-        context.user_data['state'] = 'waiting_temperatures'
+        try:
+            mode = get_reactor_mode(reactor_number)
+            reactor_id = get_reactor_id(reactor_number)
+            context.user_data['current_reactor'] = reactor_id
+            context.user_data['mode'] = mode
+            
+            await update.message.reply_text(
+                f"Выбран реактор: <code>{reactor_id}</code>\n\n"
+                "Введите температуры в формате:\n"
+                "[три значения температур] [температура задания]\n"
+                "Например: <code>1008.5 1003.7 1001.2 1000.0</code>\n"
+                "или: <code>1008,5 1003,7 1001,2 1000,0</code>",
+                parse_mode='HTML'
+            )
+            context.user_data['state'] = 'waiting_temperatures'
+        except ValueError as e:
+            await update.message.reply_text(f"❌ {str(e)}", parse_mode='HTML')
     
     elif context.user_data.get('state') == 'waiting_temperatures' or 'editing_reactor' in context.user_data:
         reactor_id = context.user_data.get('editing_reactor') or context.user_data.get('current_reactor')
