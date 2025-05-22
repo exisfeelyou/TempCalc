@@ -15,11 +15,8 @@ PC_CHARACTERISTIC_LENGTH = float(os.getenv('PC_CHARACTERISTIC_LENGTH'))
 BPRT_MAX_DEVIATION = float(os.getenv('BPRT_MAX_DEVIATION'))
 BPRT_CHARACTERISTIC_LENGTH = float(os.getenv('BPRT_CHARACTERISTIC_LENGTH'))
 
-USE_TEMP_OFFSETS = os.getenv('USE_TEMP_OFFSETS', 'false').lower() == 'true'
-OFFSET_B = float(os.getenv('OFFSET_B', '2'))
-OFFSET_C_POS = float(os.getenv('OFFSET_C_POS', '1'))
-OFFSET_C_NEG = float(os.getenv('OFFSET_C_NEG', '-1'))
-OFFSET_D = float(os.getenv('OFFSET_D', '-1'))
+# Значения по умолчанию для диапазонов зон (формат: "Б_мин Б_макс Ц_мин Ц_макс Д_мин Д_макс")
+DEFAULT_RANGES = [float(x) for x in os.getenv('DEFAULT_RANGES', '2 0 1 -1 0 -1').split()]
 
 def parse_temperature(input_str: str) -> float:
     try:
@@ -27,26 +24,30 @@ def parse_temperature(input_str: str) -> float:
     except ValueError:
         raise ValueError("❌ Неверный формат числа. Используйте точку или запятую для разделения десятичных знаков.")
 
-def parse_temperatures(input_str: str, editing_mode: bool = False, target_temp: float = None) -> Tuple[List[float], float]:
+def parse_temperatures(input_str: str, editing_mode: bool = False, target_temp: float = None) -> Tuple[List[float], List[float]]:
     try:
         if editing_mode and target_temp is not None:
             current_temps = [parse_temperature(temp) for temp in input_str.strip().split()]
             if len(current_temps) != 3:
                 raise ValueError("❌ Необходимо ввести три значения текущих температур.")
-            return current_temps, target_temp
+            return current_temps, [target_temp] * 3
         else:
             try:
                 values = [parse_temperature(temp) for temp in input_str.strip().split()]
-                if len(values) != 4:
-                    raise ValueError("❌ Необходимо ввести четыре значения: три текущих температуры и температуру задания.")
-                    
-                current_temps = values[:3]
-                target_temp = values[3]
-                
-                return current_temps, target_temp
+                if len(values) == 4:
+                    current_temps = values[:3]
+                    target_temp = values[3]
+                    return current_temps, [target_temp] * 3
+                elif len(values) == 6:
+                    current_temps = values[:3]
+                    target_temps = values[3:]
+                    return current_temps, target_temps
+                else:
+                    raise ValueError("❌ Необходимо ввести или 4 значения (три текущих температуры и одну температуру задания), "
+                                  "или 6 значений (три текущих температуры и три температуры задания).")
                 
             except ValueError as e:
-                if "четыре значения" in str(e):
+                if "значения" in str(e):
                     raise e
                 raise ValueError("❌ Неверный формат температур.")
             
@@ -54,7 +55,11 @@ def parse_temperatures(input_str: str, editing_mode: bool = False, target_temp: 
         if editing_mode:
             raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур]\nНапример: <code>1008.5 1003.7 1001.2</code>")
         else:
-            raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур] [температура задания]\nНапример: <code>1008.5 1003.7 1001.2 1000.0</code>")
+            raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур] [температура задания]\n"
+                          "Например:\n"
+                          "<code>1008.5 1003.7 1001.2 1000.0</code>\n"
+                          "или\n"
+                          "<code>1008.5 1003.7 1001.2 1040.0 1000.0 1000.0</code>")
 
 def custom_round(value: float) -> str:
     if abs(value) < 0.25:
@@ -96,26 +101,23 @@ class ThermalReactor:
             [self.heat_transfer_coef**5, 1.0, 1.0]
         ])
 
-    def set_temperatures(self, current_temps: List[float], target_temp: float, user_id: int = None):
+    def set_temperatures(self, current_temps: List[float], target_temps: List[float], user_id: int = None):
         self.initial_temps = np.array(current_temps)
-        self.TARGET_TEMP = target_temp
+        self.TARGET_TEMP = target_temps[0]  # для совместимости используем первое значение
+        self.TARGET_TEMPS = np.array(target_temps)
         
         if self.user_ranges_dict and user_id in self.user_ranges_dict:
             self.user_ranges = self.user_ranges_dict[user_id]
-            self.TARGET_TEMPS = np.array([target_temp] * 3)
         else:
-            if USE_TEMP_OFFSETS:
-                self.TARGET_TEMPS = np.array([
-                    target_temp + OFFSET_B,
-                    target_temp,
-                    target_temp + OFFSET_D
-                ])
-            else:
-                self.TARGET_TEMPS = np.array([target_temp] * 3)
+            # Используем значения по умолчанию из env
+            self.user_ranges = {
+                'B': [DEFAULT_RANGES[0], DEFAULT_RANGES[1]],
+                'C': [DEFAULT_RANGES[2], DEFAULT_RANGES[3]],
+                'D': [DEFAULT_RANGES[4], DEFAULT_RANGES[5]]
+            }
 
     def calculate_corrections(self, final_temps: np.ndarray) -> np.ndarray:
         corrections = np.zeros(3)
-        base_temp = self.TARGET_TEMP
         current_temps = self.initial_temps
 
         if self.user_ranges:
@@ -123,8 +125,9 @@ class ThermalReactor:
             
             # 1. Центральная зона (Ц)
             current_c = current_temps[1]
-            c_upper = base_temp + max(self.user_ranges['C'])
-            c_lower = base_temp + min(self.user_ranges['C'])
+            target_c = self.TARGET_TEMPS[1]
+            c_upper = target_c + max(self.user_ranges['C'])
+            c_lower = target_c + min(self.user_ranges['C'])
             
             if current_c > c_upper:
                 c_target = c_upper
@@ -144,8 +147,9 @@ class ThermalReactor:
                     continue
                     
                 current = current_temps[idx]
-                upper = base_temp + max(self.user_ranges[zone])
-                lower = base_temp + min(self.user_ranges[zone])
+                target = self.TARGET_TEMPS[idx]
+                upper = target + max(self.user_ranges[zone])
+                lower = target + min(self.user_ranges[zone])
                 
                 if current > upper:
                     target = upper
@@ -178,21 +182,7 @@ class ThermalReactor:
 
     def objective_function(self, corrections: np.ndarray) -> float:
         final_temps = self.calculate_temperature_changes(corrections)
-        
-        if USE_TEMP_OFFSETS and not self.user_ranges:
-            base_temp = self.TARGET_TEMP
-            c_variants = [
-                base_temp + OFFSET_C_POS,
-                base_temp,
-                base_temp + OFFSET_C_NEG
-            ]
-            deviation_b = (final_temps[0] - (base_temp + OFFSET_B)) ** 2
-            deviation_c = min((final_temps[1] - variant) ** 2 for variant in c_variants)
-            deviation_d = (final_temps[2] - (base_temp + OFFSET_D)) ** 2
-            
-            return deviation_b + deviation_c + deviation_d
-        else:
-            return np.sum((final_temps - self.TARGET_TEMPS) ** 2)
+        return np.sum((final_temps - self.TARGET_TEMPS) ** 2)
 
     def optimize_temperatures(self) -> Tuple[np.ndarray, np.ndarray]:
         if self.user_ranges:
@@ -215,23 +205,55 @@ class ThermalReactor:
             final_temps = self.calculate_temperature_changes(corrections)
             return corrections, final_temps
 
-async def handle_temperatures(update: Update, context: ContextTypes.DEFAULT_TYPE, reactor_id: str, active_outputs: Dict[str, Any], user_ranges_dict: Dict):
+async def handle_temperatures(update: Update, context: ContextTypes.DEFAULT_TYPE, reactor_id: str, active_outputs: Dict[str, Any], user_ranges_dict: Dict, reactor_specific_ranges_dict: Dict):
     try:
         editing_mode = 'editing_reactor' in context.user_data
-        target_temp = active_outputs.get(reactor_id, {}).get('temps', {}).get('target') if editing_mode else None
+        target_temps = active_outputs.get(reactor_id, {}).get('temps', {}).get('target_temps') if editing_mode else None
         
-        current_temps, target_temp = parse_temperatures(
+        current_temps, target_temps = parse_temperatures(
             update.message.text, 
             editing_mode=editing_mode,
-            target_temp=target_temp
+            target_temp=target_temps[0] if target_temps else None
         )
+        
+        # Если это режим редактирования, берем mode из активного вывода
+        if editing_mode:
+            # Сохраняем режим в context.user_data если его там нет
+            if 'mode' not in context.user_data and reactor_id in active_outputs:
+                context.user_data['mode'] = active_outputs[reactor_id].get('mode')
         
         if 'mode' not in context.user_data:
             raise ValueError("❌ Сначала выберите реактор")
             
         mode = context.user_data['mode']
-        reactor = ThermalReactor(mode=mode, user_ranges_dict=user_ranges_dict)
-        reactor.set_temperatures(current_temps, target_temp, update.effective_user.id)
+        user_id = update.effective_user.id
+        
+        # Проверяем наличие особых диапазонов для реактора
+        if (user_id in reactor_specific_ranges_dict and 
+            reactor_id in reactor_specific_ranges_dict[user_id]):
+            # Используем особые диапазоны для реактора
+            ranges = reactor_specific_ranges_dict[user_id][reactor_id]
+            ranges_info = "\n📍 Используются особые диапазоны реактора:\n"
+        else:
+            # Используем пользовательские диапазоны или DEFAULT_RANGES
+            if user_id in user_ranges_dict and user_ranges_dict[user_id]:
+                ranges = user_ranges_dict[user_id]
+                ranges_info = "\n🌐 Используются общие диапазоны:\n"
+            else:
+                # Преобразуем DEFAULT_RANGES (список из 6 чисел) в словарь с диапазонами
+                ranges = {
+                    'B': (DEFAULT_RANGES[0], DEFAULT_RANGES[1]),  # Первая пара чисел для зоны Б
+                    'C': (DEFAULT_RANGES[2], DEFAULT_RANGES[3]),  # Вторая пара чисел для зоны Ц
+                    'D': (DEFAULT_RANGES[4], DEFAULT_RANGES[5])   # Третья пара чисел для зоны Д
+                }
+                ranges_info = "\n🌐 Используются стандартные диапазоны:\n"
+
+        # Создаем словарь с диапазонами для пользователя
+        ranges_dict = {user_id: ranges}
+
+        # Создаем экземпляр реактора с выбранными диапазонами
+        reactor = ThermalReactor(mode=mode, user_ranges_dict=ranges_dict)
+        reactor.set_temperatures(current_temps, target_temps, user_id)
         
         corrections, final_temps = reactor.optimize_temperatures()
         
@@ -243,10 +265,16 @@ async def handle_temperatures(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        # Добавляем информацию об используемых диапазонах
+        ranges_info += f"Б: от {ranges['B'][0]:+.1f} до {ranges['B'][1]:+.1f}\n"
+        ranges_info += f"Ц: от {ranges['C'][0]:+.1f} до {ranges['C'][1]:+.1f}\n"
+        ranges_info += f"Д: от {ranges['D'][0]:+.1f} до {ranges['D'][1]:+.1f}"
+        
         message = (
             f"Реактор: <code>{reactor_id}</code>\n\n"
             f"⌛️ Текущие температуры (Б Ц Д): <code>{' '.join(f'{temp:.1f}' for temp in current_temps)}</code>\n\n"
-            f"🌡 Температура по заданию: <code>{target_temp:.1f}</code>\n\n"
+            f"🌡 Температуры задания (Б Ц Д): <code>{' '.join(f'{temp:.1f}' for temp in target_temps)}</code>\n"
+            f"{ranges_info}\n\n"
             f"🔧 Нужно откорректировать:\n\n"
         )
         
@@ -260,19 +288,22 @@ async def handle_temperatures(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         message += f"\n🌡 Предположительная температура после корректировок: <code>{' '.join(f'{temp:.1f}°C' for temp in final_temps)}</code>"
         
+        # Сохраняем режим в active_outputs
         active_outputs[reactor_id] = {
             "message": message,
             "temps": {
                 "current": current_temps,
-                "target": target_temp
+                "target_temps": target_temps
             },
             "corrections": corrections.tolist(),
-            "final_temps": final_temps.tolist()
+            "final_temps": final_temps.tolist(),
+            "mode": mode  # Добавляем режим в сохраняемые данные
         }
         
         await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
         
-        if 'state' in context.user_data:
+        # Не удаляем mode из context.user_data при редактировании
+        if 'state' in context.user_data and not editing_mode:
             del context.user_data['state']
             
     except ValueError as e:
