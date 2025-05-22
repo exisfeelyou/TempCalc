@@ -25,41 +25,75 @@ def parse_temperature(input_str: str) -> float:
         raise ValueError("❌ Неверный формат числа. Используйте точку или запятую для разделения десятичных знаков.")
 
 def parse_temperatures(input_str: str, editing_mode: bool = False, target_temp: float = None) -> Tuple[List[float], List[float]]:
+    """
+    Парсинг введенных температур с учетом режима редактирования.
+    
+    Args:
+        input_str (str): Строка с температурами
+        editing_mode (bool): Режим редактирования (по умолчанию False)
+        target_temp (float): Целевая температура для режима редактирования (по умолчанию None)
+        
+    Returns:
+        Tuple[List[float], List[float]]: Кортеж из двух списков:
+            - текущие температуры [Б, Ц, Д]
+            - целевые температуры [целевая_Б, целевая_Ц, целевая_Д]
+            
+    Raises:
+        ValueError: При неверном формате ввода или количестве значений
+    """
     try:
         if editing_mode and target_temp is not None:
-            current_temps = [parse_temperature(temp) for temp in input_str.strip().split()]
-            if len(current_temps) != 3:
-                raise ValueError("❌ Необходимо ввести три значения текущих температур.")
-            return current_temps, [target_temp] * 3
+            try:
+                # Парсинг только текущих температур в режиме редактирования
+                current_temps = [parse_temperature(temp) for temp in input_str.strip().split()]
+                if len(current_temps) != 3:
+                    raise ValueError("❌ Необходимо ввести три значения текущих температур.")
+                
+                return current_temps, [target_temp] * 3
+                
+            except ValueError as e:
+                raise ValueError("❌ Неверный формат температур в режиме редактирования.")
         else:
             try:
+                # Парсинг всех температур (текущих и целевых)
                 values = [parse_temperature(temp) for temp in input_str.strip().split()]
+                
+                # Проверка количества значений
+                if len(values) not in [4, 6]:
+                    raise ValueError(
+                        "❌ Необходимо ввести или 4 значения (три текущих температуры и одну температуру задания), "
+                        "или 6 значений (три текущих температуры и три температуры задания)."
+                    )
+                
                 if len(values) == 4:
                     current_temps = values[:3]
                     target_temp = values[3]
                     return current_temps, [target_temp] * 3
-                elif len(values) == 6:
+                else:  # len(values) == 6
                     current_temps = values[:3]
                     target_temps = values[3:]
                     return current_temps, target_temps
-                else:
-                    raise ValueError("❌ Необходимо ввести или 4 значения (три текущих температуры и одну температуру задания), "
-                                  "или 6 значений (три текущих температуры и три температуры задания).")
-                
+                    
             except ValueError as e:
-                if "значения" in str(e):
+                if "Необходимо ввести" in str(e):
                     raise e
                 raise ValueError("❌ Неверный формат температур.")
             
     except ValueError as e:
+        # Формируем информативное сообщение об ошибке с примерами
+        error_message = str(e)
         if editing_mode:
-            raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур]\nНапример: <code>1008.5 1003.7 1001.2</code>")
+            error_message += "\nФормат ввода: [три значения текущих температур]\n"
+            error_message += "Например: <code>1008.5 1003.7 1001.2</code>\n"
+            error_message += "или: <code>1008,5 1003,7 1001,2</code>"
         else:
-            raise ValueError(f"{str(e)}\nФормат ввода: [три значения температур] [температура задания]\n"
-                          "Например:\n"
-                          "<code>1008.5 1003.7 1001.2 1000.0</code>\n"
-                          "или\n"
-                          "<code>1008.5 1003.7 1001.2 1040.0 1000.0 1000.0</code>")
+            error_message += "\nФормат ввода: [три значения текущих температур] [температура задания]\n"
+            error_message += "Например:\n"
+            error_message += "<code>1008.5 1003.7 1001.2 1000.0</code>\n"
+            error_message += "или: <code>1008,5 1003,7 1001,2 1000,0</code>\n"
+            error_message += "или: <code>1008.5 1003.7 1001.2 1040.0 1000.0 1000.0</code>\n"
+            error_message += "или: <code>1008,5 1003,7 1001,2 1040,0 1000,0 1000,0</code>"
+        raise ValueError(error_message)
 
 def custom_round(value: float) -> str:
     if abs(value) < 0.25:
@@ -86,6 +120,12 @@ class ThermalReactor:
         self.TARGET_TEMPS = None
         self.user_ranges = None
         self.user_ranges_dict = user_ranges_dict
+        self.input_state = {
+            'waiting_for_correction': False,
+            'last_error': None,
+            'last_input': None,
+            'retry_count': 0
+        }
         
         # Разные коэффициенты теплопередачи для разных режимов
         if mode == 'pc':
@@ -102,108 +142,152 @@ class ThermalReactor:
         ])
 
     def set_temperatures(self, current_temps: List[float], target_temps: List[float], user_id: int = None):
-        self.initial_temps = np.array(current_temps)
-        self.TARGET_TEMP = target_temps[0]  # для совместимости используем первое значение
-        self.TARGET_TEMPS = np.array(target_temps)
-        
-        if self.user_ranges_dict and user_id in self.user_ranges_dict:
-            self.user_ranges = self.user_ranges_dict[user_id]
-        else:
-            # Используем значения по умолчанию из env
-            self.user_ranges = {
-                'B': [DEFAULT_RANGES[0], DEFAULT_RANGES[1]],
-                'C': [DEFAULT_RANGES[2], DEFAULT_RANGES[3]],
-                'D': [DEFAULT_RANGES[4], DEFAULT_RANGES[5]]
-            }
+        try:
+            self.initial_temps = np.array(current_temps)
+            self.TARGET_TEMP = target_temps[0]  # для совместимости используем первое значение
+            self.TARGET_TEMPS = np.array(target_temps)
+            
+            if self.user_ranges_dict and user_id in self.user_ranges_dict:
+                self.user_ranges = self.user_ranges_dict[user_id]
+            else:
+                # Используем значения по умолчанию из env
+                self.user_ranges = {
+                    'B': [DEFAULT_RANGES[0], DEFAULT_RANGES[1]],
+                    'C': [DEFAULT_RANGES[2], DEFAULT_RANGES[3]],
+                    'D': [DEFAULT_RANGES[4], DEFAULT_RANGES[5]]
+                }
+            
+            # Сброс состояния ввода при успешной установке температур
+            self.reset_input_state()
+            
+        except (ValueError, TypeError) as e:
+            self.input_state['waiting_for_correction'] = True
+            self.input_state['last_error'] = str(e)
+            self.input_state['retry_count'] += 1
+            raise ValueError(f"Ошибка при установке температур: {str(e)}\nПожалуйста, попробуйте ввести значения снова.")
+
+    def reset_input_state(self):
+        """Сброс состояния ввода"""
+        self.input_state = {
+            'waiting_for_correction': False,
+            'last_error': None,
+            'last_input': None,
+            'retry_count': 0
+        }
 
     def calculate_corrections(self, final_temps: np.ndarray) -> np.ndarray:
-        corrections = np.zeros(3)
-        current_temps = self.initial_temps
+        try:
+            corrections = np.zeros(3)
+            current_temps = self.initial_temps
 
-        if self.user_ranges:
-            influence_matrix = self.get_influence_matrix()
-            
-            # 1. Центральная зона (Ц)
-            current_c = current_temps[1]
-            target_c = self.TARGET_TEMPS[1]
-            c_upper = target_c + max(self.user_ranges['C'])
-            c_lower = target_c + min(self.user_ranges['C'])
-            
-            if current_c > c_upper:
-                c_target = c_upper
-            elif current_c < c_lower:
-                c_target = c_lower
-            else:
-                c_steps = np.arange(c_lower, c_upper + 0.5, 0.5)
-                c_target = c_steps[np.abs(c_steps - current_c).argmin()]
-            
-            initial_c_correction = round((c_target - current_c) * 2) / 2
-            
-            # 2. Краевые зоны с учетом влияния центра
-            targets = []
-            for zone, idx in [('B', 0), ('C', 1), ('D', 2)]:
-                if idx == 1:  # Центральная зона
-                    targets.append(c_target)
-                    continue
-                    
-                current = current_temps[idx]
-                target = self.TARGET_TEMPS[idx]
-                upper = target + max(self.user_ranges[zone])
-                lower = target + min(self.user_ranges[zone])
+            if self.user_ranges:
+                influence_matrix = self.get_influence_matrix()
                 
-                if current > upper:
-                    target = upper
-                elif current < lower:
-                    target = lower
+                # 1. Центральная зона (Ц)
+                current_c = current_temps[1]
+                target_c = self.TARGET_TEMPS[1]
+                c_upper = target_c + max(self.user_ranges['C'])
+                c_lower = target_c + min(self.user_ranges['C'])
+                
+                if current_c > c_upper:
+                    c_target = c_upper
+                elif current_c < c_lower:
+                    c_target = c_lower
                 else:
-                    steps = np.arange(lower, upper + 0.5, 0.5)
-                    target = steps[np.abs(steps - current).argmin()]
-                targets.append(target)
-            
-            # 3. Решаем систему уравнений для получения корректировок
-            # M * corrections = targets - current_temps
-            # где M - матрица влияния
-            targets = np.array(targets)
-            corrections = np.linalg.solve(influence_matrix, targets - current_temps)
-            
-            # Округляем корректировки до ближайших 0.5
-            corrections = np.round(corrections * 2) / 2
+                    c_steps = np.arange(c_lower, c_upper + 0.5, 0.5)
+                    c_target = c_steps[np.abs(c_steps - current_c).argmin()]
+                
+                initial_c_correction = round((c_target - current_c) * 2) / 2
+                
+                # 2. Краевые зоны с учетом влияния центра
+                targets = []
+                for zone, idx in [('B', 0), ('C', 1), ('D', 2)]:
+                    if idx == 1:  # Центральная зона
+                        targets.append(c_target)
+                        continue
+                        
+                    current = current_temps[idx]
+                    target = self.TARGET_TEMPS[idx]
+                    upper = target + max(self.user_ranges[zone])
+                    lower = target + min(self.user_ranges[zone])
+                    
+                    if current > upper:
+                        target = upper
+                    elif current < lower:
+                        target = lower
+                    else:
+                        steps = np.arange(lower, upper + 0.5, 0.5)
+                        target = steps[np.abs(steps - current).argmin()]
+                    targets.append(target)
+                
+                # 3. Решаем систему уравнений для получения корректировок
+                targets = np.array(targets)
+                corrections = np.linalg.solve(influence_matrix, targets - current_temps)
+                
+                # Округляем корректировки до ближайших 0.5
+                corrections = np.round(corrections * 2) / 2
 
-        return corrections
+            return corrections
+            
+        except Exception as e:
+            self.input_state['waiting_for_correction'] = True
+            self.input_state['last_error'] = str(e)
+            raise ValueError(f"Ошибка при расчете корректировок: {str(e)}")
 
     def calculate_temperature_changes(self, corrections: np.ndarray) -> np.ndarray:
-        # Используем общий метод для получения матрицы влияния
-        influence_matrix = self.get_influence_matrix()
-        
-        temperature_changes = np.dot(influence_matrix, corrections)
-        final_temps = self.initial_temps + temperature_changes
-        
-        return final_temps
+        try:
+            influence_matrix = self.get_influence_matrix()
+            temperature_changes = np.dot(influence_matrix, corrections)
+            final_temps = self.initial_temps + temperature_changes
+            return final_temps
+            
+        except Exception as e:
+            self.input_state['waiting_for_correction'] = True
+            self.input_state['last_error'] = str(e)
+            raise ValueError(f"Ошибка при расчете изменений температуры: {str(e)}")
 
     def objective_function(self, corrections: np.ndarray) -> float:
         final_temps = self.calculate_temperature_changes(corrections)
         return np.sum((final_temps - self.TARGET_TEMPS) ** 2)
 
     def optimize_temperatures(self) -> Tuple[np.ndarray, np.ndarray]:
-        if self.user_ranges:
-            corrections = self.calculate_corrections(self.initial_temps)
-            final_temps = self.calculate_temperature_changes(corrections)
-            return corrections, final_temps
-        else:
-            initial_guess = np.zeros(3)
-            result = minimize(
-                self.objective_function,
-                initial_guess,
-                method='SLSQP',
-                options={'ftol': 1e-8, 'maxiter': 1000}
-            )
-            
-            if not result.success:
-                raise ValueError("Оптимизация не сошлась!")
-            
-            corrections = result.x
-            final_temps = self.calculate_temperature_changes(corrections)
-            return corrections, final_temps
+        try:
+            if self.user_ranges:
+                corrections = self.calculate_corrections(self.initial_temps)
+                final_temps = self.calculate_temperature_changes(corrections)
+                return corrections, final_temps
+            else:
+                initial_guess = np.zeros(3)
+                result = minimize(
+                    self.objective_function,
+                    initial_guess,
+                    method='SLSQP',
+                    options={'ftol': 1e-8, 'maxiter': 1000}
+                )
+                
+                if not result.success:
+                    raise ValueError("Оптимизация не сошлась!")
+                
+                corrections = result.x
+                final_temps = self.calculate_temperature_changes(corrections)
+                return corrections, final_temps
+                
+        except Exception as e:
+            self.input_state['waiting_for_correction'] = True
+            self.input_state['last_error'] = str(e)
+            raise ValueError(f"Ошибка при оптимизации температур: {str(e)}")
+
+    def get_input_state(self) -> dict:
+        """Получение текущего состояния ввода"""
+        return self.input_state.copy()
+
+    def is_waiting_for_correction(self) -> bool:
+        """Проверка, ожидается ли корректировка ввода"""
+        return self.input_state['waiting_for_correction']
+
+    def get_last_error(self) -> str:
+        """Получение последней ошибки"""
+        return self.input_state['last_error']
 
 async def handle_temperatures(update: Update, context: ContextTypes.DEFAULT_TYPE, reactor_id: str, active_outputs: Dict[str, Any], user_ranges_dict: Dict, reactor_specific_ranges_dict: Dict):
     try:
