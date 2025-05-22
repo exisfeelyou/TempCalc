@@ -368,8 +368,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Если пользователь ввел одну из основных команд меню, сбрасываем все состояния
         if text in ["⚙️ Новый вывод", "🖥️ Текущие выводы", "🔧 Рабочие диапазоны зон"]:
+            # Сохраняем важные данные перед сбросом
+            mode = context.user_data.get('mode')
+            current_reactor = context.user_data.get('current_reactor')
             # Сброс всех состояний перед обработкой новой команды
             context.user_data.clear()
+            # Восстанавливаем режим работы если он был
+            if mode:
+                context.user_data['mode'] = mode
+            if current_reactor:
+                context.user_data['current_reactor'] = current_reactor
             
         if text == "⚙️ Новый вывод":
             await update.message.reply_text(
@@ -393,9 +401,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await process_all_ranges(update, context)
             except ValueError as e:
                 await update.message.reply_text(f"❌ {str(e)}")
-                # При ошибке сбрасываем состояние
-                if 'state' in context.user_data:
-                    del context.user_data['state']
+                # Сохраняем важные данные перед обработкой ошибки
+                mode = context.user_data.get('mode')
+                # Сохраняем состояние ожидания диапазонов
+                context.user_data['state'] = 'waiting_all_ranges'
+                if mode:
+                    context.user_data['mode'] = mode
         
         elif 'editing_range' in context.user_data:
             try:
@@ -414,9 +425,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             except ValueError as e:
                 await update.message.reply_text(f"❌ {str(e)}")
-                # При ошибке сбрасываем состояние редактирования
-                if 'editing_range' in context.user_data:
-                    del context.user_data['editing_range']
+                # Сохраняем данные о редактируемой зоне
+                zone = context.user_data.get('editing_range')
+                mode = context.user_data.get('mode')
+                if zone:
+                    context.user_data['editing_range'] = zone
+                if mode:
+                    context.user_data['mode'] = mode
         
         elif context.user_data.get('state') == 'waiting_reactor_number':
             try:
@@ -428,9 +443,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "Используйте формат X-X (например: <code>1-1</code>) или XX (например: <code>11</code>).",
                         parse_mode='HTML'
                     )
-                    # При ошибке сбрасываем состояние
-                    if 'state' in context.user_data:
-                        del context.user_data['state']
+                    # Сохраняем состояние ожидания номера реактора
+                    context.user_data['state'] = 'waiting_reactor_number'
                     return
                     
                 reactor_id = get_reactor_id(reactor_number)
@@ -440,9 +454,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "Сначала завершите текущий вывод этого реактора.",
                         parse_mode='HTML'
                     )
-                    # При ошибке сбрасываем состояние
-                    if 'state' in context.user_data:
-                        del context.user_data['state']
+                    # Сохраняем состояние ожидания номера реактора
+                    context.user_data['state'] = 'waiting_reactor_number'
                     return
                     
                 mode = get_reactor_mode(reactor_number)
@@ -453,7 +466,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ranges_message = ""
                 keyboard = []
 
-                # Проверяем, установлены ли диапазоны для этого реактора
                 if user_id in reactor_specific_ranges and reactor_id in reactor_specific_ranges[user_id]:
                     ranges = reactor_specific_ranges[user_id][reactor_id]
                     ranges_message = "\n📍 Для этого реактора установлены особые диапазоны:\n"
@@ -486,9 +498,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['state'] = 'waiting_temperatures'
             except ValueError as e:
                 await update.message.reply_text(f"❌ {str(e)}", parse_mode='HTML')
-                # При ошибке сбрасываем состояние
-                if 'state' in context.user_data:
-                    del context.user_data['state']
+                # Сохраняем важные данные и состояние
+                mode = context.user_data.get('mode')
+                context.user_data['state'] = 'waiting_reactor_number'
+                if mode:
+                    context.user_data['mode'] = mode
         
         elif context.user_data.get('state') == 'waiting_temperatures' or 'editing_reactor' in context.user_data:
             try:
@@ -505,11 +519,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     del context.user_data['editing_reactor']
             except ValueError as e:
                 await update.message.reply_text(str(e), parse_mode='HTML')
-                # При ошибке сбрасываем состояния
-                if 'state' in context.user_data:
-                    del context.user_data['state']
-                if 'editing_reactor' in context.user_data:
-                    del context.user_data['editing_reactor']
+                # Сохраняем важные данные перед обработкой ошибки
+                mode = context.user_data.get('mode')
+                current_reactor = context.user_data.get('current_reactor')
+                editing_reactor = context.user_data.get('editing_reactor')
+                
+                # Сохраняем состояние ожидания температур
+                context.user_data['state'] = 'waiting_temperatures'
+                
+                # Восстанавливаем необходимые данные
+                if mode:
+                    context.user_data['mode'] = mode
+                if current_reactor:
+                    context.user_data['current_reactor'] = current_reactor
+                if editing_reactor:
+                    context.user_data['editing_reactor'] = editing_reactor
         
         elif 'setting_reactor_ranges' in context.user_data:
             try:
@@ -542,7 +566,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 del context.user_data['setting_reactor_ranges']
                 context.user_data['state'] = 'waiting_temperatures'
                 context.user_data['current_reactor'] = reactor_id
-                context.user_data['mode'] = mode  # Добавляем режим работы в context.user_data
+                context.user_data['mode'] = mode
                 
                 await update.message.reply_text(
                     f"✅ Диапазоны для реактора {reactor_id} установлены\n"
@@ -558,14 +582,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             except ValueError as e:
                 await update.message.reply_text(f"❌ {str(e)}")
-                if 'setting_reactor_ranges' in context.user_data:
-                    del context.user_data['setting_reactor_ranges']
+                # Сохраняем важные данные перед обработкой ошибки
+                mode = context.user_data.get('mode')
+                reactor_id = context.user_data.get('setting_reactor_ranges')
+                if mode:
+                    context.user_data['mode'] = mode
+                if reactor_id:
+                    context.user_data['setting_reactor_ranges'] = reactor_id
 
     except Exception as e:
         # Общий обработчик ошибок
         await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}", parse_mode='HTML')
-        # При любой ошибке сбрасываем все состояния
+        # Сохраняем важные данные перед обработкой общей ошибки
+        mode = context.user_data.get('mode')
+        current_reactor = context.user_data.get('current_reactor')
+        editing_reactor = context.user_data.get('editing_reactor')
+        current_state = context.user_data.get('state')
+        
+        # Очищаем состояния но сохраняем критически важные данные
         context.user_data.clear()
+        
+        # Восстанавливаем необходимые данные
+        if mode:
+            context.user_data['mode'] = mode
+        if current_reactor:
+            context.user_data['current_reactor'] = current_reactor
+        if editing_reactor:
+            context.user_data['editing_reactor'] = editing_reactor
+        if current_state:
+            context.user_data['state'] = current_state
 
 def main():
     application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
