@@ -1,4 +1,4 @@
-import platform, os, sys, json
+import platform, os, sys, json, re
 from typing import Dict, Any, List, Tuple
 from subprocess import call
 
@@ -26,9 +26,34 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 load_dotenv()
 
-# Загрузка базы данных реакторов
-with open('assets/reactors.json', 'r') as f:
-    REACTORS_DB = json.load(f)
+def load_reactors_db():
+    """Загружает и проверяет базу данных реакторов"""
+    global REACTORS_DB
+    try:
+        with open('assets/reactors.json', 'r', encoding='utf-8') as f:
+            REACTORS_DB = json.load(f)
+            
+        # Проверяем и нормализуем данные
+        for reactor_id, data in REACTORS_DB['reactors'].items():
+            # Убеждаемся, что alt это список
+            if isinstance(data['alt'], str):
+                data['alt'] = [data['alt']]
+            
+            # Нормализуем строки (убираем невидимые символы)
+            data['id'] = data['id'].strip()
+            data['alt'] = [alt.strip() for alt in data['alt']]
+            
+            print(f"DEBUG: Loaded reactor {reactor_id}:")
+            print(f"  id: '{data['id']}'")
+            print(f"  alt: {data['alt']}")
+            print(f"  mode: {data['mode']}")
+            
+    except Exception as e:
+        print(f"ERROR loading reactors database: {str(e)}")
+        raise
+
+# Используем функцию для загрузки базы
+load_reactors_db()
 
 # Словарь для хранения активных выводов
 active_outputs = {}  # {reactor_id: {"message": message_text, "temps": {"current": [...], "target_temps": [...]}, "corrections": [...], "final_temps": [...]}}
@@ -38,6 +63,145 @@ user_ranges = {}  # {user_id: {'B': (min, max), 'C': (min, max), 'D': (min, max)
 
 # Словарь для хранения пользовательских диапазонов для конкретных реакторов
 reactor_specific_ranges = {}  # {user_id: {reactor_id: {'B': (min, max), 'C': (min, max), 'D': (min, max)}}}
+
+def is_valid_format(reactor_number: str) -> bool:
+    """
+    Проверяет, соответствует ли номер реактора одному из допустимых форматов.
+    
+    Допустимые форматы:
+    - ТМ-Н, ТМ-В (буквенные с дефисом)
+    - ТМН, ТМВ (буквенные без дефиса)
+    - тм-н, тм-в (строчные с дефисом)
+    - тмн, тмв (строчные без дефиса)
+    - YY-Y (где Y - цифры)
+    - YYY (где Y - цифры)
+    - Y-Y (где Y - цифры)
+    - YY (где Y - цифры)
+    """
+    if not reactor_number:
+        print("DEBUG: Пустой номер реактора")
+        return False
+        
+    print(f"DEBUG: Проверка формата для номера: '{reactor_number}'")
+    
+    # Буквенные специальные паттерны для ТМ-Н и ТМ-В
+    special_patterns = [
+        r'^ТМ-[НВ]$',      # ТМ-Н или ТМ-В
+        r'^ТМ[НВ]$',       # ТМН или ТМВ
+        r'^тм-[нв]$',      # тм-н или тм-в
+        r'^тм[нв]$'        # тмн или тмв
+    ]
+    
+    # Числовые паттерны
+    number_patterns = [
+        r'^\d{2}-\d$',    # YY-Y (например, 11-1)
+        r'^\d{3}$',       # YYY (например, 111)
+        r'^\d-\d$',       # Y-Y (например, 1-1)
+        r'^\d{2}$'        # YY (например, 11)
+    ]
+    
+    # Проверяем специальные буквенные паттерны
+    for pattern in special_patterns:
+        if re.match(pattern, reactor_number):
+            print(f"DEBUG: Найдено соответствие специальному паттерну: {pattern}")
+            return True
+            
+    # Проверяем числовые паттерны
+    for pattern in number_patterns:
+        if re.match(pattern, reactor_number):
+            print(f"DEBUG: Найдено соответствие числовому паттерну: {pattern}")
+            return True
+    
+    print(f"DEBUG: Формат не соответствует ни одному паттерну")
+    return False
+
+def get_reactor_id(reactor_number: str) -> str:
+    """
+    Получает ID реактора по введенному номеру.
+    Args:
+        reactor_number: номер реактора
+    Returns:
+        str: ID реактора из базы данных
+    """
+    reactor_number = reactor_number.strip()
+    print(f"DEBUG: Поиск реактора: '{reactor_number}'")
+    
+    # Если это ID, возвращаем его
+    if reactor_number in REACTORS_DB['reactors']:
+        print(f"DEBUG: Найден как основной ID")
+        return reactor_number
+
+    # Если это альтернативное значение, ищем соответствующий ID
+    for reactor_id, reactor_data in REACTORS_DB['reactors'].items():
+        alt_values = reactor_data['alt']
+        if not isinstance(alt_values, list):
+            alt_values = [alt_values]
+            
+        # Выводим для отладки
+        print(f"DEBUG: Проверяем {reactor_id}, alt значения: {alt_values}")
+        
+        # Проверяем каждое альтернативное значение
+        for alt in alt_values:
+            if reactor_number == alt.strip():
+                print(f"DEBUG: Найдено соответствие в alt значениях")
+                return reactor_id
+                
+    print(f"DEBUG: Реактор не найден")
+    return reactor_number
+
+def validate_reactor_number(reactor_number: str) -> bool:
+    """
+    Проверяет существование номера реактора в базе данных.
+    """
+    if not reactor_number:
+        raise ValueError("❌ Номер реактора не может быть пустым")
+        
+    reactor_number = reactor_number.strip()
+    print(f"DEBUG: Проверка реактора: '{reactor_number}'")
+    
+    # Проверяем формат
+    if not is_valid_format(reactor_number):
+        raise ValueError(
+            "❌ Неверный формат номера реактора.\n"
+            "Допустимые форматы:\n"
+            "• Буквенные: ТМ-Н, ТМН, тм-н, тмн\n"
+            "• Цифровые: Y-Y, YY-Y, YY или YYY (например: 1-1, 11-1, 11 или 111)"
+        )
+    
+    # Пробуем найти в базе как есть
+    if reactor_number in REACTORS_DB['reactors']:
+        print(f"DEBUG: Найден как основной ID: '{reactor_number}'")
+        return True
+        
+    # Проверяем варианты из alt
+    for reactor_id, reactor_data in REACTORS_DB['reactors'].items():
+        alt = reactor_data['alt']
+        if isinstance(alt, list) and reactor_number in alt:
+            print(f"DEBUG: Найден как альтернативный ID для {reactor_id}: '{reactor_number}'")
+            return True
+        elif isinstance(alt, str) and reactor_number == alt:
+            print(f"DEBUG: Найден как строковый альтернативный ID для {reactor_id}: '{reactor_number}'")
+            return True
+    
+    print(f"DEBUG: Не найден в базе: '{reactor_number}'")
+    raise ValueError(
+        "❌ Указанный номер реактора не найден в базе данных.\n"
+        "Проверьте правильность ввода номера."
+    )
+
+def get_reactor_mode(reactor_number: str) -> str:
+    """
+    Получает режим работы реактора из базы данных
+    """
+    reactor_id = get_reactor_id(reactor_number)
+    
+    if reactor_id in REACTORS_DB['reactors']:
+        return REACTORS_DB['reactors'][reactor_id]['mode']
+        
+    raise ValueError(
+        "❌ Указанный номер реактора не найден в базе данных.\n"
+        "Проверьте правильность ввода номера."
+    )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сброс всех состояний при старте
@@ -118,49 +282,6 @@ async def show_ranges(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(message, reply_markup=reply_markup)
-
-def validate_reactor_number(reactor_number: str) -> bool:
-    # Проверяем, существует ли номер как ID или как альтернативное значение
-    if reactor_number in REACTORS_DB['reactors']:  # Проверка как ID (1-1, 1-2, etc.)
-        return True
-    
-    # Проверка как альтернативного значения (11, 12, etc.)
-    for reactor_data in REACTORS_DB['reactors'].values():
-        if reactor_data['alt'] == reactor_number:
-            return True
-    return False
-
-def get_reactor_mode(reactor_number: str) -> str:
-    """
-    Получает режим работы реактора из базы данных
-    Args:
-        reactor_number: номер реактора в формате X-X или XX
-    Returns:
-        str: режим работы реактора из базы данных
-    Raises:
-        ValueError: если реактор не найден
-    """
-    # Проверяем сначала как ID
-    if reactor_number in REACTORS_DB['reactors']:
-        return REACTORS_DB['reactors'][reactor_number]['mode']
-    
-    # Если не нашли как ID, ищем как альтернативное значение
-    for reactor_data in REACTORS_DB['reactors'].values():
-        if reactor_data['alt'] == reactor_number:
-            return reactor_data['mode']
-            
-    raise ValueError(f"Реактор {reactor_number} не найден в базе данных")
-
-def get_reactor_id(reactor_number: str) -> str:
-    # Если это ID, возвращаем его
-    if reactor_number in REACTORS_DB['reactors']:
-        return reactor_number
-    
-    # Если это альтернативное значение, находим соответствующий ID
-    for reactor_id, reactor_data in REACTORS_DB['reactors'].items():
-        if reactor_data['alt'] == reactor_number:
-            return reactor_id
-    return reactor_number
 
 async def handle_range_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -382,10 +503,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "⚙️ Новый вывод":
             await update.message.reply_text(
                 "✍️ Введите номер реактора:\n\n"
-                "<blockquote>Например:\n\n"
-                "• <code>1-1</code> или упрощённый вариант <code>11</code>\n"
-                "• <code>1-2</code> или упрощённый вариант <code>12</code>\n"
-                "• <code>1-3</code> или упрощённый вариант <code>13</code></blockquote>",
+                "<blockquote>Допустимые форматы:\n\n"
+                "• Буквенные: <code>XX-X</code> или <code>XXX</code> (например: <code>ТМ-Н</code> или <code>ТМН</code>)\n"
+                "• Цифровые: <code>Y-Y</code>, <code>YY-Y</code>, <code>YY</code> или <code>YYY</code>\n"
+                "(например: <code>1-1</code>, <code>11-1</code>, <code>11</code> или <code>111</code>)</blockquote>",
                 parse_mode='HTML'
             )
             context.user_data['state'] = 'waiting_reactor_number'
@@ -440,7 +561,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not validate_reactor_number(reactor_number):
                     await update.message.reply_text(
                         "❌ Неверный номер реактора.\n"
-                        "Используйте формат X-X (например: <code>1-1</code>) или XX (например: <code>11</code>).",
+                        "Допустимые форматы:\n"
+                        "• Буквенные: XX-X или XXX (например: ТМ-Н или ТМН)\n"
+                        "• Цифровые: Y-Y, YY-Y, YY или YYY (например: 1-1, 11-1, 11 или 111)",
                         parse_mode='HTML'
                     )
                     # Сохраняем состояние ожидания номера реактора
@@ -496,6 +619,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=reply_markup
                 )
                 context.user_data['state'] = 'waiting_temperatures'
+                
             except ValueError as e:
                 await update.message.reply_text(f"❌ {str(e)}", parse_mode='HTML')
                 # Сохраняем важные данные и состояние
