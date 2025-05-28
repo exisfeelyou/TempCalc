@@ -439,7 +439,8 @@ async def handle_range_callback(update: Update, context: ContextTypes.DEFAULT_TY
         f"Введите диапазон для зоны {zone} в формате:\n"
         f"<code>мин макс</code>\n\n"
         f"Например: <code>+2 0</code>",
-        parse_mode='HTML'
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_ranges")]])
     )
 
 async def set_range_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -450,7 +451,8 @@ async def set_range_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Введите диапазоны для всех зон в формате:\n"
         "<code>Б_мин Б_макс Ц_мин Ц_макс Д_мин Д_макс</code>\n\n"
         "Например: <code>+2 0 +1 -1 0 -1</code>",
-        parse_mode='HTML'
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_ranges")]])
     )
 
 async def process_all_ranges(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -585,7 +587,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Введите диапазоны для всех зон в формате:\n"
                 "<code>Б_мин Б_макс Ц_мин Ц_макс Д_мин Д_макс</code>\n\n"
                 "Например: <code>+2 0 +1 -1 0 -1</code>",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_ranges")]])
             )
             
         elif query.data.startswith("delete_reactor_ranges_"):
@@ -618,6 +621,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if current_mode:
                     context.user_data['mode'] = current_mode
                 await handle_range_callback(update, context)
+                
+        elif query.data == "back_to_ranges":
+            # Сохраняем режим работы перед очисткой состояний
+            mode = context.user_data.get('mode')
+            context.user_data.clear()
+            # Восстанавливаем режим работы если он был
+            if mode:
+                context.user_data['mode'] = mode
+            # Показываем меню диапазонов
+            await show_ranges(update, context)
 
     except Exception as e:
         # Общий обработчик ошибок
