@@ -43,13 +43,7 @@ def load_reactors_db():
             data['id'] = data['id'].strip()
             data['alt'] = [alt.strip() for alt in data['alt']]
             
-            print(f"DEBUG: Loaded reactor {reactor_id}:")
-            print(f"  id: '{data['id']}'")
-            print(f"  alt: {data['alt']}")
-            print(f"  mode: {data['mode']}")
-            
     except Exception as e:
-        print(f"ERROR loading reactors database: {str(e)}")
         raise
 
 # Используем функцию для загрузки базы
@@ -69,27 +63,28 @@ def is_valid_format(reactor_number: str) -> bool:
     Проверяет, соответствует ли номер реактора одному из допустимых форматов.
     
     Допустимые форматы:
-    - ТМ-Н, ТМ-В (буквенные с дефисом)
-    - ТМН, ТМВ (буквенные без дефиса)
+    - ТМ-Н, ТМ-В (заглавные с дефисом)
+    - ТМН, ТМВ (заглавные без дефиса)
     - тм-н, тм-в (строчные с дефисом)
     - тмн, тмв (строчные без дефиса)
+    - Тм-н, Тм-в (с заглавной первой буквой, с дефисом)
+    - Тмн, Тмв (с заглавной первой буквой, без дефиса)
     - YY-Y (где Y - цифры)
     - YYY (где Y - цифры)
     - Y-Y (где Y - цифры)
     - YY (где Y - цифры)
     """
     if not reactor_number:
-        print("DEBUG: Пустой номер реактора")
         return False
         
-    print(f"DEBUG: Проверка формата для номера: '{reactor_number}'")
-    
     # Буквенные специальные паттерны для ТМ-Н и ТМ-В
     special_patterns = [
         r'^ТМ-[НВ]$',      # ТМ-Н или ТМ-В
         r'^ТМ[НВ]$',       # ТМН или ТМВ
         r'^тм-[нв]$',      # тм-н или тм-в
-        r'^тм[нв]$'        # тмн или тмв
+        r'^тм[нв]$',       # тмн или тмв
+        r'^Тм-[нв]$',      # Тм-н или Тм-в
+        r'^Тм[нв]$'        # Тмн или Тмв
     ]
     
     # Числовые паттерны
@@ -103,16 +98,13 @@ def is_valid_format(reactor_number: str) -> bool:
     # Проверяем специальные буквенные паттерны
     for pattern in special_patterns:
         if re.match(pattern, reactor_number):
-            print(f"DEBUG: Найдено соответствие специальному паттерну: {pattern}")
             return True
             
     # Проверяем числовые паттерны
     for pattern in number_patterns:
         if re.match(pattern, reactor_number):
-            print(f"DEBUG: Найдено соответствие числовому паттерну: {pattern}")
             return True
     
-    print(f"DEBUG: Формат не соответствует ни одному паттерну")
     return False
 
 def get_reactor_id(reactor_number: str) -> str:
@@ -124,11 +116,9 @@ def get_reactor_id(reactor_number: str) -> str:
         str: ID реактора из базы данных
     """
     reactor_number = reactor_number.strip()
-    print(f"DEBUG: Поиск реактора: '{reactor_number}'")
     
     # Если это ID, возвращаем его
     if reactor_number in REACTORS_DB['reactors']:
-        print(f"DEBUG: Найден как основной ID")
         return reactor_number
 
     # Если это альтернативное значение, ищем соответствующий ID
@@ -137,16 +127,11 @@ def get_reactor_id(reactor_number: str) -> str:
         if not isinstance(alt_values, list):
             alt_values = [alt_values]
             
-        # Выводим для отладки
-        print(f"DEBUG: Проверяем {reactor_id}, alt значения: {alt_values}")
-        
         # Проверяем каждое альтернативное значение
         for alt in alt_values:
             if reactor_number == alt.strip():
-                print(f"DEBUG: Найдено соответствие в alt значениях")
                 return reactor_id
                 
-    print(f"DEBUG: Реактор не найден")
     return reactor_number
 
 def validate_reactor_number(reactor_number: str) -> bool:
@@ -157,7 +142,6 @@ def validate_reactor_number(reactor_number: str) -> bool:
         raise ValueError("❌ Номер реактора не может быть пустым")
         
     reactor_number = reactor_number.strip()
-    print(f"DEBUG: Проверка реактора: '{reactor_number}'")
     
     # Проверяем формат
     if not is_valid_format(reactor_number):
@@ -170,20 +154,16 @@ def validate_reactor_number(reactor_number: str) -> bool:
     
     # Пробуем найти в базе как есть
     if reactor_number in REACTORS_DB['reactors']:
-        print(f"DEBUG: Найден как основной ID: '{reactor_number}'")
         return True
         
     # Проверяем варианты из alt
     for reactor_id, reactor_data in REACTORS_DB['reactors'].items():
         alt = reactor_data['alt']
         if isinstance(alt, list) and reactor_number in alt:
-            print(f"DEBUG: Найден как альтернативный ID для {reactor_id}: '{reactor_number}'")
             return True
         elif isinstance(alt, str) and reactor_number == alt:
-            print(f"DEBUG: Найден как строковый альтернативный ID для {reactor_id}: '{reactor_number}'")
             return True
     
-    print(f"DEBUG: Не найден в базе: '{reactor_number}'")
     raise ValueError(
         "❌ Указанный номер реактора не найден в базе данных.\n"
         "Проверьте правильность ввода номера."
@@ -192,6 +172,10 @@ def validate_reactor_number(reactor_number: str) -> bool:
 def get_reactor_mode(reactor_number: str) -> str:
     """
     Получает режим работы реактора из базы данных
+    Args:
+        reactor_number: номер реактора
+    Returns:
+        str: режим работы реактора из базы данных
     """
     reactor_id = get_reactor_id(reactor_number)
     
