@@ -390,6 +390,37 @@ def parse_range(input_str: str) -> Tuple[float, float]:
     except:
         raise ValueError("Неверный формат. Введите два числа, разделенных пробелом")
 
+async def show_reactor_input_message(message, reactor_id, ranges_message="", with_keyboard=True):
+    """Вспомогательная функция для отображения сообщения ввода температур"""
+    keyboard = []
+    if with_keyboard:
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "Установить рабочие диапазоны для этого реактора", 
+                    callback_data=f"set_reactor_ranges_{reactor_id}"
+                )
+            ],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]  # Добавляем кнопку "Назад"
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+    text = (
+        f"Выбран реактор: <code>{reactor_id}</code>{ranges_message}\n\n"
+        "Введите температуры в формате:\n"
+        "[три значения температур] [температура задания]\n"
+        "Например: <code>1008.5 1003.7 1001.2 1000.0</code>\n"
+        "или: <code>1008,5 1003,7 1001,2 1000,0</code>\n"
+        "или: <code>1008.5 1003.7 1001.2 1040.0 1000.0 1000.0</code>\n"
+        "или: <code>1008,5 1003,7 1001,2 1040,0 1000,0 1000,0</code>"
+    )
+    
+    if isinstance(message, Update):
+        await message.message.reply_text(text, parse_mode='HTML', reply_markup=reply_markup)
+    else:
+        await message.edit_text(text, parse_mode='HTML', reply_markup=reply_markup)
+
 async def show_ranges(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -520,10 +551,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                callback_data=f"set_reactor_ranges_{reactor_id}"),
                             InlineKeyboardButton("Удалить особые диапазоны", 
                                                callback_data=f"delete_reactor_ranges_{reactor_id}")
-                        ]
+                        ],
+                        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_ranges")]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    await query.message.reply_text(message, reply_markup=reply_markup)
+                    await query.message.edit_text(message, reply_markup=reply_markup)
             else:
                 reactor_id = query.data.split("_")[1]
                 if reactor_id in active_outputs:
@@ -535,7 +567,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         ]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    await query.message.reply_text(output_data["message"], reply_markup=reply_markup, parse_mode='HTML')
+                    await query.message.edit_text(output_data["message"], reply_markup=reply_markup, parse_mode='HTML')
         
         elif query.data.startswith("edit_"):
             reactor_id = query.data.split("_")[1]
@@ -556,16 +588,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 current_temps = active_outputs[reactor_id]["temps"]["current"]
                 target_temps = active_outputs[reactor_id]["temps"]["target_temps"]
                 
-                await query.message.reply_text(
+                message = (
                     f"Реактор: <code>{reactor_id}</code>\n\n"
                     f"⌛️ Текущие температуры (Б Ц Д): <code>{' '.join(f'{temp:.1f}' for temp in current_temps)}</code>\n\n"
                     f"🌡 Температуры задания (Б Ц Д): <code>{' '.join(f'{temp:.1f}' for temp in target_temps)}</code>\n\n"
                     "Введите новые температуры в формате:\n"
                     "[три значения температур]\n"
                     "Например: <code>1008.5 1003.7 1001.2</code>\n"
-                    "или: <code>1008,5 1003,7 1001,2</code>",
-                    parse_mode='HTML'
+                    "или: <code>1008,5 1003,7 1001,2</code>"
                 )
+                
+                keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=f"show_{reactor_id}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='HTML')
         
         elif query.data.startswith("finish_"):
             reactor_id = query.data.split("_")[1]
@@ -577,19 +613,75 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reactor_id = query.data.split("_")[3]
             # Сохраняем mode перед очисткой
             current_mode = context.user_data.get('mode')
+            # Определяем источник перехода по наличию show_reactor_ranges_ в предыдущем сообщении
+            is_from_ranges = bool(query.message.text and query.message.text.startswith("📍 Особые диапазоны для реактора"))
             context.user_data.clear()
             # Восстанавливаем mode если он был
             if current_mode:
                 context.user_data['mode'] = current_mode
             context.user_data['setting_reactor_ranges'] = reactor_id
-            await query.message.reply_text(
+            # Сохраняем информацию об источнике перехода
+            context.user_data['from_ranges_menu'] = is_from_ranges
+            
+            message = (
                 f"Установка диапазонов для реактора {reactor_id}\n"
                 "Введите диапазоны для всех зон в формате:\n"
                 "<code>Б_мин Б_макс Ц_мин Ц_макс Д_мин Д_макс</code>\n\n"
-                "Например: <code>+2 0 +1 -1 0 -1</code>",
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_ranges")]])
+                "Например: <code>+2 0 +1 -1 0 -1</code>"
             )
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=f"back_to_reactor_ranges_{reactor_id}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='HTML')
+            
+        elif query.data.startswith("back_to_reactor_ranges_"):
+            reactor_id = query.data.split("_")[-1]
+            user_id = update.effective_user.id
+            
+            # Проверяем, откуда был совершен переход
+            if context.user_data.get('from_ranges_menu'):
+                # Возвращаемся к просмотру особых диапазонов
+                if user_id in reactor_specific_ranges and reactor_id in reactor_specific_ranges[user_id]:
+                    ranges = reactor_specific_ranges[user_id][reactor_id]
+                    message = f"📍 Особые диапазоны для реактора {reactor_id}:\n\n"
+                    message += f"Б: от {ranges['B'][0]:+.1f} до {ranges['B'][1]:+.1f}\n"
+                    message += f"Ц: от {ranges['C'][0]:+.1f} до {ranges['C'][1]:+.1f}\n"
+                    message += f"Д: от {ranges['D'][0]:+.1f} до {ranges['D'][1]:+.1f}"
+                    
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("Изменить диапазоны", 
+                                               callback_data=f"set_reactor_ranges_{reactor_id}"),
+                            InlineKeyboardButton("Удалить особые диапазоны", 
+                                               callback_data=f"delete_reactor_ranges_{reactor_id}")
+                        ],
+                        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_ranges")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.message.edit_text(message, reply_markup=reply_markup)
+            else:
+                # Возвращаемся к экрану ввода температур
+                ranges_message = ""
+                if user_id in reactor_specific_ranges and reactor_id in reactor_specific_ranges[user_id]:
+                    ranges = reactor_specific_ranges[user_id][reactor_id]
+                    ranges_message = "\n📍 Для этого реактора установлены особые диапазоны:\n"
+                    ranges_message += f"Б: от {ranges['B'][0]:+.1f} до {ranges['B'][1]:+.1f}\n"
+                    ranges_message += f"Ц: от {ranges['C'][0]:+.1f} до {ranges['C'][1]:+.1f}\n"
+                    ranges_message += f"Д: от {ranges['D'][0]:+.1f} до {ranges['D'][1]:+.1f}"
+                
+                # Очищаем временные данные, но сохраняем режим
+                mode = context.user_data.get('mode')
+                context.user_data.clear()
+                if mode:
+                    context.user_data['mode'] = mode
+                
+                # Показываем экран ввода температур
+                await show_reactor_input_message(query.message, reactor_id, ranges_message)
+                
+                # Устанавливаем состояние ожидания температур
+                context.user_data['state'] = 'waiting_temperatures'
+                context.user_data['current_reactor'] = reactor_id
             
         elif query.data.startswith("delete_reactor_ranges_"):
             reactor_id = query.data.split("_")[3]
@@ -604,7 +696,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ Особые диапазоны для реактора {reactor_id} удалены"
                 )
                 # Показываем обновленный список диапазонов
-                await show_ranges(update, context)
+                await edit_ranges_menu(query.message, user_id)
         
         elif query.data.startswith("range_"):
             # Сохраняем mode перед очисткой
@@ -614,13 +706,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Восстанавливаем mode если он был
                 if current_mode:
                     context.user_data['mode'] = current_mode
-                await set_range_all(update, context)
+                
+                message = (
+                    "Введите диапазоны для всех зон в формате:\n"
+                    "<code>Б_мин Б_макс Ц_мин Ц_макс Д_мин Д_макс</code>\n\n"
+                    "Например: <code>+2 0 +1 -1 0 -1</code>"
+                )
+                
+                keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_ranges")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='HTML')
             else:
+                zone = query.data.split('_')[1]
                 context.user_data.clear()  # Сбрасываем все предыдущие состояния
                 # Восстанавливаем mode если он был
                 if current_mode:
                     context.user_data['mode'] = current_mode
-                await handle_range_callback(update, context)
+                context.user_data['editing_range'] = zone
+                
+                message = (
+                    f"Введите диапазон для зоны {zone} в формате:\n"
+                    f"<code>мин макс</code>\n\n"
+                    f"Например: <code>+2 0</code>"
+                )
+                
+                keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_ranges")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='HTML')
                 
         elif query.data == "back_to_ranges":
             # Сохраняем режим работы перед очисткой состояний
@@ -630,16 +744,81 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if mode:
                 context.user_data['mode'] = mode
             # Показываем меню диапазонов
-            await show_ranges(update, context)
+            await edit_ranges_menu(query.message, update.effective_user.id)
+
+        elif query.data == "back_to_reactor_input":
+            # Сохраняем режим работы перед очисткой состояний
+            mode = context.user_data.get('mode')
+            context.user_data.clear()
+            if mode:
+                context.user_data['mode'] = mode
+            
+            # Восстанавливаем состояние ожидания номера реактора
+            context.user_data['state'] = 'waiting_reactor_number'
+            
+            # Отправляем сообщение с запросом номера реактора
+            await query.message.edit_text(
+                "✍️ Введите номер реактора:\n\n"
+                "<blockquote>Допустимые форматы:\n\n"
+                "• Буквенные: <code>XX-X</code> или <code>XXX</code> (например: <code>ТМ-Н</code> или <code>ТМН</code>)\n"
+                "• Цифровые: <code>Y-Y</code>, <code>YY-Y</code>, <code>YY</code> или <code>YYY</code>\n"
+                "(например: <code>1-1</code>, <code>11-1</code>, <code>11</code> или <code>111</code>)</blockquote>",
+                parse_mode='HTML'
+            )
 
     except Exception as e:
         # Общий обработчик ошибок
-        await query.message.reply_text(f"❌ Произошла ошибка: {str(e)}", parse_mode='HTML')
+        error_message = f"❌ Произошла ошибка: {str(e)}"
+        try:
+            await query.message.edit_text(error_message, parse_mode='HTML')
+        except:
+            try:
+                await query.message.reply_text(error_message, parse_mode='HTML')
+            except:
+                print(f"Failed to send error message: {error_message}")
+        
         # При любой ошибке сбрасываем все состояния, кроме mode
         current_mode = context.user_data.get('mode')
         context.user_data.clear()
         if current_mode:
             context.user_data['mode'] = current_mode
+
+async def edit_ranges_menu(message, user_id):
+    """Вспомогательная функция для отображения меню диапазонов"""
+    # Если диапазоны не установлены, используем значения по умолчанию
+    if user_id not in user_ranges:
+        user_ranges[user_id] = {
+            'B': (DEFAULT_RANGES[0], DEFAULT_RANGES[1]),
+            'C': (DEFAULT_RANGES[2], DEFAULT_RANGES[3]),
+            'D': (DEFAULT_RANGES[4], DEFAULT_RANGES[5])
+        }
+    
+    ranges = user_ranges[user_id]
+    message_text = "🌐 Общие рабочие диапазоны:\n\n"
+    message_text += f"Б: от {ranges['B'][0]:+.1f} до {ranges['B'][1]:+.1f}\n"
+    message_text += f"Ц: от {ranges['C'][0]:+.1f} до {ranges['C'][1]:+.1f}\n"
+    message_text += f"Д: от {ranges['D'][0]:+.1f} до {ranges['D'][1]:+.1f}"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("Б", callback_data="range_B"),
+            InlineKeyboardButton("Ц", callback_data="range_C"),
+            InlineKeyboardButton("Д", callback_data="range_D")
+        ],
+        [InlineKeyboardButton("Установить для всех зон сразу", callback_data="range_all")]
+    ]
+    
+    # Добавляем кнопки для реакторов с особыми диапазонами
+    if user_id in reactor_specific_ranges:
+        message_text += "\n\n📍 Реакторы с особыми диапазонами:"
+        for reactor_id in reactor_specific_ranges[user_id]:
+            keyboard.append([
+                InlineKeyboardButton(f"Реактор {reactor_id}", 
+                                  callback_data=f"show_reactor_ranges_{reactor_id}")
+            ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await message.edit_text(message_text, reply_markup=reply_markup)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -745,28 +924,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mode = get_reactor_mode(reactor_number)
                 context.user_data['current_reactor'] = reactor_id
                 context.user_data['mode'] = mode
+                context.user_data['state'] = 'waiting_temperatures'
 
                 user_id = update.effective_user.id
                 ranges_message = ""
-                keyboard = []
-
+                
                 if user_id in reactor_specific_ranges and reactor_id in reactor_specific_ranges[user_id]:
                     ranges = reactor_specific_ranges[user_id][reactor_id]
                     ranges_message = "\n📍 Для этого реактора установлены особые диапазоны:\n"
                     ranges_message += f"Б: от {ranges['B'][0]:+.1f} до {ranges['B'][1]:+.1f}\n"
                     ranges_message += f"Ц: от {ranges['C'][0]:+.1f} до {ranges['C'][1]:+.1f}\n"
                     ranges_message += f"Д: от {ranges['D'][0]:+.1f} до {ranges['D'][1]:+.1f}"
-                else:
-                    keyboard = [
-                        [
-                            InlineKeyboardButton(
-                                "Установить рабочие диапазоны для этого реактора", 
-                                callback_data=f"set_reactor_ranges_{reactor_id}"
-                            )
-                        ]
-                    ]
 
-                reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            "Изменить рабочие диапазоны для этого реактора", 
+                            callback_data=f"set_reactor_ranges_{reactor_id}"
+                        )
+                    ],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back_to_reactor_input")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await update.message.reply_text(
                     f"Выбран реактор: <code>{reactor_id}</code>{ranges_message}\n\n"
@@ -779,7 +958,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML',
                     reply_markup=reply_markup
                 )
-                context.user_data['state'] = 'waiting_temperatures'
                 
             except ValueError as e:
                 await update.message.reply_text(f"❌ {str(e)}", parse_mode='HTML')
@@ -852,6 +1030,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['state'] = 'waiting_temperatures'
                 context.user_data['current_reactor'] = reactor_id
                 context.user_data['mode'] = mode
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            "Установить рабочие диапазоны для этого реактора", 
+                            callback_data=f"set_reactor_ranges_{reactor_id}"
+                        )
+                    ],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back_to_reactor_input")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await update.message.reply_text(
                     f"✅ Диапазоны для реактора {reactor_id} установлены\n"
@@ -862,7 +1051,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "или: <code>1008,5 1003,7 1001,2 1000,0</code>\n"
                     "или: <code>1008.5 1003.7 1001.2 1040.0 1000.0 1000.0</code>\n"
                     "или: <code>1008,5 1003,7 1001,2 1040,0 1000,0 1000,0</code>",
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
                 )
                 
             except ValueError as e:
